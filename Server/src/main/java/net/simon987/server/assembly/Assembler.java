@@ -1,5 +1,6 @@
 package net.simon987.server.assembly;
 
+import net.simon987.server.GameServer;
 import net.simon987.server.ServerConfiguration;
 import net.simon987.server.assembly.exception.*;
 import net.simon987.server.logging.LogManager;
@@ -24,7 +25,7 @@ public class Assembler {
 
     private RegisterSet registerSet;
 
-    private static final int MEM_SIZE   = 0x10000;  // Size in words
+    private static final int MEM_SIZE = GameServer.INSTANCE.getConfig().getInt("memory_size");
 
     public Assembler(InstructionSet instructionSet, RegisterSet registerSet, ServerConfiguration config) {
         this.instructionSet = instructionSet;
@@ -54,14 +55,14 @@ public class Assembler {
      */
     private static String removeLabel(String line) {
 
-        return line.replaceAll("\\b\\w*\\b:", "");
+        return line.replaceAll("^\\s*\\b\\w*\\b:", "");
 
     }
 
     /**
      * Check for and save the origin
      *
-     * @param line   Current line. Assuming that the comments & labels are removed
+     * @param line   Current line. Assuming that the comments and labels are removed
      * @param result Current line number
      */
     private static void checkForORGInstruction(String line, AssemblyResult result, int currentLine)
@@ -97,11 +98,11 @@ public class Assembler {
         line = removeComment(line);
 
         //Check for labels
-        Pattern pattern = Pattern.compile("\\b\\w*\\b:");
+        Pattern pattern = Pattern.compile("^\\s*\\b\\w*\\b:");
         Matcher matcher = pattern.matcher(line);
 
         if (matcher.find()) {
-            String label = matcher.group(0).substring(0, matcher.group(0).length() - 1);
+            String label = matcher.group(0).substring(0, matcher.group(0).length() - 1).trim();
 
             LogManager.LOGGER.fine("DEBUG: Label " + label + " @ " + (result.origin + currentOffset));
             result.labels.put(label, (char) (result.origin + currentOffset));
@@ -121,7 +122,7 @@ public class Assembler {
     /**
      * Parse the DW instruction (Define word). Handles DUP operator
      *
-     * @param line        Current line. assuming that comments & labels are removed
+     * @param line        Current line. assuming that comments and labels are removed
      * @param currentLine Current line number
      * @param labels      Map of labels
      * @return Encoded instruction, null if the line is not a DW instruction
@@ -139,7 +140,7 @@ public class Assembler {
             try {
 
                 //Special thanks to https://stackoverflow.com/questions/1757065/
-                String[] values = line.substring(2, line.length()).split(",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", -1);
+                String[] values = line.substring(2).split(",(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)", -1);
 
                 for (String value : values) {
 
@@ -155,7 +156,14 @@ public class Assembler {
 
                         //Unescape the string
                         String string = value.substring(1, value.length() - 1);
-                        string = StringEscapeUtils.unescapeJava(string);
+
+                        try {
+                            string = StringEscapeUtils.unescapeJava(string);
+                        } catch (IllegalArgumentException e) {
+                            throw new InvalidOperandException(
+                                "Invalid string operand \"" + string + "\": " + e.getMessage(), 
+                                currentLine);
+                        }
 
                         out.write(string.getBytes(StandardCharsets.UTF_16BE));
                     } else if (labels != null && labels.containsKey(value)) {
@@ -175,7 +183,18 @@ public class Assembler {
                                 out.writeChar(0);
 
                             } else {
-                                throw new InvalidOperandException("Invalid operand \"" + value + '"', currentLine);
+
+                                //Integer.decode failed, try binary
+                                if (value.startsWith("0b")) {
+                                    try {
+                                        out.writeChar(Integer.parseInt(value.substring(2), 2));
+                                    } catch (NumberFormatException e2) {
+                                        throw new InvalidOperandException("Invalid operand \"" + value + '"', currentLine);
+                                    }
+                                } else {
+                                    throw new InvalidOperandException("Invalid operand \"" + value + '"', currentLine);
+
+                                }
                             }
                         }
                     }
@@ -247,7 +266,7 @@ public class Assembler {
     /**
      * Parse the DW instruction (Define word). Handles DUP operator
      *
-     * @param line        Current line. assuming that comments & labels are removed
+     * @param line        Current line. assuming that comments and labels are removed
      * @param currentLine Current line number
      * @return Encoded instruction, null if the line is not a DW instruction
      */
@@ -256,25 +275,25 @@ public class Assembler {
     }
 
     /**
-     * Check for and handle segment declarations (.text & .data)
+     * Check for and handle section declarations (.text and .data)
      *
      * @param line Current line
      */
-    private static void checkForSegmentDeclaration(String line, AssemblyResult result,
+    private static void checkForSectionDeclaration(String line, AssemblyResult result,
                                                    int currentLine, int currentOffset) throws AssemblyException {
 
         String[] tokens = line.split("\\s+");
 
         if (tokens[0].toUpperCase().equals(".TEXT")) {
 
-            result.defineSegment(Segment.TEXT, currentLine, currentOffset);
+            result.defineSecton(Section.TEXT, currentLine, currentOffset);
             throw new PseudoInstructionException(currentLine);
 
         } else if (tokens[0].toUpperCase().equals(".DATA")) {
 
             LogManager.LOGGER.fine("DEBUG: .data @" + currentLine);
 
-            result.defineSegment(Segment.DATA, currentLine, currentOffset);
+            result.defineSecton(Section.DATA, currentLine, currentOffset);
             throw new PseudoInstructionException(currentLine);
         }
     }
@@ -296,7 +315,7 @@ public class Assembler {
         String[] tokens = line.split("\\s+");
 
 
-        if (line.toUpperCase().contains(" EQU ")) {
+        if (line.toUpperCase().matches(".*\\bEQU\\b.*")) {
             if (tokens[1].toUpperCase().equals("EQU") && tokens.length == 3) {
                 try {
                     //Save value as a label
@@ -385,7 +404,7 @@ public class Assembler {
                 }
 
                 //Check for pseudo instructions
-                checkForSegmentDeclaration(line, result, currentLine, currentOffset);
+                checkForSectionDeclaration(line, result, currentLine, currentOffset);
                 checkForEQUInstruction(line, result.labels, currentLine);
                 checkForORGInstruction(line, result, currentLine);
 
@@ -521,9 +540,10 @@ public class Assembler {
         }
 
         //Check operands and encode instruction
+        final int beginIndex = line.indexOf(mnemonic) + mnemonic.length();
         if (line.contains(",")) {
             //2 operands
-            String strO1 = line.substring(line.indexOf(mnemonic) + mnemonic.length(), line.indexOf(','));
+            String strO1 = line.substring(beginIndex, line.indexOf(','));
             String strO2 = line.substring(line.indexOf(','));
 
             Operand o1, o2;
@@ -543,7 +563,7 @@ public class Assembler {
         } else if (tokens.length > 1) {
             //1 operand
 
-            String strO1 = line.substring(line.indexOf(mnemonic) + mnemonic.length());
+            String strO1 = line.substring(beginIndex);
 
             Operand o1;
             if (assumeLabels) {
@@ -564,6 +584,5 @@ public class Assembler {
         }
 
         return out.toByteArray();
-
     }
 }

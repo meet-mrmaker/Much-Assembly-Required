@@ -1,26 +1,23 @@
 package net.simon987.server.assembly;
 
-import com.mongodb.BasicDBList;
-import com.mongodb.BasicDBObject;
-import com.mongodb.DBObject;
 import net.simon987.server.GameServer;
 import net.simon987.server.ServerConfiguration;
 import net.simon987.server.assembly.exception.CancelledException;
 import net.simon987.server.assembly.instruction.*;
 import net.simon987.server.event.CpuInitialisationEvent;
 import net.simon987.server.event.GameEvent;
-import net.simon987.server.io.MongoSerialisable;
+import net.simon987.server.game.objects.ControllableUnit;
+import net.simon987.server.game.objects.HardwareHost;
+import net.simon987.server.io.MongoSerializable;
 import net.simon987.server.logging.LogManager;
-import net.simon987.server.user.User;
-
-import java.util.HashMap;
+import org.bson.Document;
 
 /**
  * CPU: Central Processing Unit. A CPU is capable of reading bytes from
- * a Memory object and execute them. A CPU object holds registers objects &
+ * a Memory object and execute them. A CPU object holds registers objects and
  * a Memory object.
  */
-public class CPU implements MongoSerialisable {
+public class CPU implements MongoSerializable {
 
     /**
      *
@@ -43,10 +40,10 @@ public class CPU implements MongoSerialisable {
     private RegisterSet registerSet;
 
     /**
-     * Offset of the code segment. The code starts to get
+     * Offset of the code section. The code starts to get
      * executed at this address each tick. Defaults to org_offset@config.properties
      */
-    private int codeSegmentOffset;
+    private int codeSectionOffset;
 
     /**
      * Instruction pointer, always points to the next instruction
@@ -54,9 +51,10 @@ public class CPU implements MongoSerialisable {
     private int ip;
 
     /**
-     * List of attached hardware, 'modules'
+     * Hardware is connected to the hardwareHost
      */
-    private HashMap<Integer, CpuHardware> attachedHardware;
+    private HardwareHost hardwareHost;
+
 
     private ServerConfiguration config;
 
@@ -68,12 +66,11 @@ public class CPU implements MongoSerialisable {
     /**
      * Creates a new CPU
      */
-    public CPU(ServerConfiguration config, User user) throws CancelledException {
+    public CPU(ServerConfiguration config, ControllableUnit unit) throws CancelledException {
         this.config = config;
         instructionSet = new DefaultInstructionSet();
         registerSet = new DefaultRegisterSet();
-        attachedHardware = new HashMap<>();
-        codeSegmentOffset = config.getInt("org_offset");
+        codeSectionOffset = config.getInt("org_offset");
 
         instructionSet.add(new JmpInstruction(this));
         instructionSet.add(new JnzInstruction(this));
@@ -99,11 +96,13 @@ public class CPU implements MongoSerialisable {
         instructionSet.add(new JoInstruction(this));
         instructionSet.add(new PushfInstruction(this));
         instructionSet.add(new PopfInstruction(this));
+        instructionSet.add(new JnaInstruction(this));
+        instructionSet.add(new JaInstruction(this));
 
         status = new Status();
         memory = new Memory(config.getInt("memory_size"));
 
-        GameEvent event = new CpuInitialisationEvent(this, user);
+        GameEvent event = new CpuInitialisationEvent(this, unit);
         GameServer.INSTANCE.getEventDispatcher().dispatch(event);
         if (event.isCancelled()) {
             throw new CancelledException();
@@ -112,7 +111,7 @@ public class CPU implements MongoSerialisable {
 
     public void reset() {
         status.clear();
-        ip = codeSegmentOffset;
+        ip = codeSectionOffset;
     }
 
     public int execute(int timeout) {
@@ -158,7 +157,7 @@ public class CPU implements MongoSerialisable {
         }
         int elapsed = (int) (System.currentTimeMillis() - startTime);
 
-        LogManager.LOGGER.fine(counter + " instruction in " + elapsed + "ms : " + (double) counter / (elapsed / 1000) / 1000000 + "MHz");
+//        LogManager.LOGGER.fine(counter + " instruction in " + elapsed + "ms : " + (double) counter / (elapsed / 1000) / 1000000 + "MHz");
 
 
         //Write execution cost and instruction count to memory
@@ -170,7 +169,6 @@ public class CPU implements MongoSerialisable {
     }
 
     public void executeInstruction(Instruction instruction, int source, int destination) {
-
 
         //Execute the instruction
         if (source == 0) {
@@ -346,47 +344,28 @@ public class CPU implements MongoSerialisable {
     }
 
     @Override
-    public BasicDBObject mongoSerialise() {
-        BasicDBObject dbObject = new BasicDBObject();
+    public Document mongoSerialise() {
+        Document dbObject = new Document();
 
         dbObject.put("memory", memory.mongoSerialise());
 
         dbObject.put("registerSet", registerSet.mongoSerialise());
-        dbObject.put("codeSegmentOffset", codeSegmentOffset);
+        dbObject.put("codeSegmentOffset", codeSectionOffset);
 
-        BasicDBList hardwareList = new BasicDBList();
-
-        for (Integer address : attachedHardware.keySet()) {
-
-            CpuHardware hardware = attachedHardware.get(address);
-
-            BasicDBObject serialisedHw = hardware.mongoSerialise();
-            serialisedHw.put("address", address);
-            hardwareList.add(serialisedHw);
-        }
-
-        dbObject.put("hardware", hardwareList);
 
         return dbObject;
 
     }
 
-    public static CPU deserialize(DBObject obj, User user) throws CancelledException {
+    public static CPU deserialize(Document obj, ControllableUnit unit) throws CancelledException {
 
-        CPU cpu = new CPU(GameServer.INSTANCE.getConfig(), user);
+        CPU cpu = new CPU(GameServer.INSTANCE.getConfig(), unit);
 
-        cpu.codeSegmentOffset = (int) obj.get("codeSegmentOffset");
+        cpu.codeSectionOffset = obj.getInteger("codeSegmentOffset");
 
-        BasicDBList hardwareList = (BasicDBList) obj.get("hardware");
 
-        for (Object serialisedHw : hardwareList) {
-            CpuHardware hardware = CpuHardware.deserialize((DBObject) serialisedHw);
-            hardware.setCpu(cpu);
-            cpu.attachHardware(hardware, (int) ((BasicDBObject) serialisedHw).get("address"));
-        }
-
-        cpu.memory = Memory.deserialize((DBObject) obj.get("memory"));
-        cpu.registerSet = RegisterSet.deserialize((DBObject) obj.get("registerSet"));
+        cpu.memory = new Memory((Document) obj.get("memory"));
+        cpu.registerSet = RegisterSet.deserialize((Document) obj.get("registerSet"));
 
         return cpu;
 
@@ -416,56 +395,25 @@ public class CPU implements MongoSerialisable {
         this.ip = ip;
     }
 
-    public void setCodeSegmentOffset(int codeSegmentOffset) {
-        this.codeSegmentOffset = codeSegmentOffset;
+    public void setCodeSectionOffset(int codeSectionOffset) {
+        this.codeSectionOffset = codeSectionOffset;
     }
 
-    public void attachHardware(CpuHardware hardware, int address) {
-        attachedHardware.put(address, hardware);
-    }
-
-    public void detachHardware(int address) {
-        attachedHardware.remove(address);
-    }
-
-    public boolean hardwareInterrupt(int address) {
-        CpuHardware hardware = attachedHardware.get(address);
-
-        if (hardware != null) {
-            hardware.handleInterrupt(status);
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    public void hardwareQuery(int address) {
-        CpuHardware hardware = attachedHardware.get(address);
-
-        if (hardware != null) {
-
-            registerSet.getRegister("B").setValue(hardware.getId());
-        } else {
-            registerSet.getRegister("B").setValue(0);
-        }
-    }
 
     @Override
     public String toString() {
 
-        String str = "------------------------\n";
-        str += registerSet.toString();
+        String str = registerSet.toString();
         str += status.toString();
-        str += "------------------------\n";
 
         return str;
     }
 
-    public CpuHardware getHardware(int address) {
-
-        return attachedHardware.get(address);
-
+    public HardwareHost getHardwareHost() {
+        return hardwareHost;
     }
 
-
+    public void setHardwareHost(HardwareHost hardwareHost) {
+        this.hardwareHost = hardwareHost;
+    }
 }

@@ -1,14 +1,13 @@
 package net.simon987.cubotplugin;
 
-import com.mongodb.BasicDBObject;
-import com.mongodb.DBObject;
-import net.simon987.server.GameServer;
-import net.simon987.server.assembly.CpuHardware;
 import net.simon987.server.assembly.Status;
-import net.simon987.server.game.Action;
-import net.simon987.server.game.TileMap;
+import net.simon987.server.game.item.Item;
+import net.simon987.server.game.objects.Action;
+import net.simon987.server.game.objects.ControllableUnit;
+import net.simon987.server.game.world.Tile;
+import org.bson.Document;
 
-public class CubotDrill extends CpuHardware {
+public class CubotDrill extends CubotHardwareModule {
 
     /**
      * Hardware ID (Should be unique)
@@ -20,10 +19,12 @@ public class CubotDrill extends CpuHardware {
     private static final int DRILL_POLL = 1;
     private static final int DRILL_GATHER = 2; // simplified gather
 
-    private Cubot cubot;
-
     public CubotDrill(Cubot cubot) {
-        this.cubot = cubot;
+        super(cubot);
+    }
+
+    public CubotDrill(Document document, ControllableUnit cubot) {
+        super(document, cubot);
     }
 
     @Override
@@ -43,36 +44,16 @@ public class CubotDrill extends CpuHardware {
 
             if (cubot.spendEnergy(1400)) {
                 if (cubot.getCurrentAction() == Action.IDLE) {
-                    int tile = cubot.getWorld().getTileMap().getTileAt(cubot.getX(), cubot.getY());
 
-                    if (tile == TileMap.IRON_TILE) {
-                        cubot.setHeldItem(TileMap.ITEM_IRON);
+                    Tile tile = cubot.getWorld().getTileMap().getTileAt(cubot.getX(), cubot.getY());
+
+                    Item newItem = tile.drill();
+                    if (newItem != null) {
                         cubot.setCurrentAction(Action.DIGGING);
-
-                    } else if (tile == TileMap.COPPER_TILE) {
-                        cubot.setHeldItem(TileMap.ITEM_COPPER);
-                        cubot.setCurrentAction(Action.DIGGING);
-
+                        cubot.giveItem(newItem);
                     }
                 }
             }
-
-
         }
-    }
-
-    @Override
-    public BasicDBObject mongoSerialise() {
-
-        BasicDBObject dbObject = new BasicDBObject();
-
-        dbObject.put("hwid", (int) HWID);
-        dbObject.put("cubot", cubot.getObjectId());
-
-        return dbObject;
-    }
-
-    public static CubotDrill deserialize(DBObject obj) {
-        return new CubotDrill((Cubot) GameServer.INSTANCE.getGameUniverse().getObject((long) obj.get("cubot")));
     }
 }

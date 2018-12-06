@@ -2,12 +2,12 @@ package net.simon987.server.plugin;
 
 import net.simon987.server.ServerConfiguration;
 import net.simon987.server.event.GameEventListener;
-import net.simon987.server.io.JSONSerialisable;
-import org.json.simple.JSONObject;
+import net.simon987.server.game.objects.GameRegistry;
 
 import java.util.ArrayList;
+import java.util.List;
 
-public abstract class ServerPlugin implements JSONSerialisable {
+public abstract class ServerPlugin {
 
     /**
      * Name of the plugin
@@ -22,12 +22,14 @@ public abstract class ServerPlugin implements JSONSerialisable {
     /**
      * List of event listeners
      */
-    protected ArrayList<GameEventListener> listeners = new ArrayList<>(5);
+    protected List<GameEventListener> listeners = new ArrayList<>(5);
+
+    protected List<String> dependencies = new ArrayList<>();
 
     /**
      * Called when the plugin is loaded
      */
-    public abstract void init(ServerConfiguration config);
+    public abstract void init(ServerConfiguration config, GameRegistry gameRegistry);
 
     public String getName() {
         return name;
@@ -45,18 +47,7 @@ public abstract class ServerPlugin implements JSONSerialisable {
         this.version = version;
     }
 
-    public ArrayList<GameEventListener> getListeners() {
+    public List<GameEventListener> getListeners() {
         return listeners;
-    }
-
-    @Override
-    public JSONObject serialise() {
-
-        JSONObject json = new JSONObject();
-
-        json.put("name", name);
-        json.put("version", version);
-
-        return json;
     }
 }

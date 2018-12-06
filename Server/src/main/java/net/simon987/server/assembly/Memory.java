@@ -1,12 +1,10 @@
 package net.simon987.server.assembly;
 
 
-import com.mongodb.BasicDBObject;
-import com.mongodb.DBObject;
 import net.simon987.server.GameServer;
-import net.simon987.server.io.MongoSerialisable;
+import net.simon987.server.io.MongoSerializable;
 import net.simon987.server.logging.LogManager;
-import org.json.simple.JSONObject;
+import org.bson.Document;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -14,6 +12,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Random;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.Inflater;
@@ -22,7 +21,7 @@ import java.util.zip.InflaterOutputStream;
 /**
  * Represents the available memory for a CPU in the game universe
  */
-public class Memory implements Target, MongoSerialisable {
+public class Memory implements Target, MongoSerializable {
 
 
     /**
@@ -37,6 +36,31 @@ public class Memory implements Target, MongoSerialisable {
      */
     public Memory(int size) {
         words = new char[size];
+    }
+
+    public Memory(Document document) {
+
+        String zipBytesStr = (String) document.get("zipBytes");
+
+        if (zipBytesStr != null) {
+            byte[] compressedBytes = Base64.getDecoder().decode((String) document.get("zipBytes"));
+
+            try {
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                Inflater decompressor = new Inflater(true);
+                InflaterOutputStream inflaterOutputStream = new InflaterOutputStream(baos, decompressor);
+                inflaterOutputStream.write(compressedBytes);
+                inflaterOutputStream.close();
+
+                setBytes(baos.toByteArray());
+
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        } else {
+            LogManager.LOGGER.severe("Memory was manually deleted");
+            words = new char[GameServer.INSTANCE.getConfig().getInt("memory_size")];
+        }
     }
 
     /**
@@ -89,6 +113,32 @@ public class Memory implements Target, MongoSerialisable {
     }
 
     /**
+     * Configurably corrupt memory
+     * 
+     * @param blockSize Block size (in words) in which to randomly flip one bit
+     */
+     public void corrupt(int blockSize) {
+         Random rand = new Random();
+
+         // Increment offset by blockSize
+         for (int offset = 0; offset < words.length; offset += blockSize) {
+
+             // Calculate address to corrupt by adding a random value between 0 to (blocksize-1) to offset
+             int address = rand.nextInt(blockSize) + offset;
+
+             // Checking here avoids having a protected area at the end of the address space
+             if(address < words.length) {
+
+                 // Calculate bitmask by left-shifting 1 by a random value between 0 and 15
+                 int bitmask = 1 << rand.nextInt(16);
+
+                 // Flip the bit with XOR	
+                 words[address] ^= bitmask;
+             }
+         }
+    }
+
+    /**
      * Fill the memory with 0s
      */
     public void clear() {
@@ -107,9 +157,9 @@ public class Memory implements Target, MongoSerialisable {
     }
 
     @Override
-    public BasicDBObject mongoSerialise() {
+    public Document mongoSerialise() {
 
-        BasicDBObject dbObject = new BasicDBObject();
+        Document dbObject = new Document();
 
         try {
             ByteArrayOutputStream stream = new ByteArrayOutputStream();
@@ -126,65 +176,6 @@ public class Memory implements Target, MongoSerialisable {
         }
 
         return dbObject;
-    }
-
-    public static Memory deserialize(DBObject obj) {
-
-        Memory memory = new Memory(0);
-
-        String zipBytesStr = (String) obj.get("zipBytes");
-
-        if (zipBytesStr != null) {
-            byte[] compressedBytes = Base64.getDecoder().decode((String) obj.get("zipBytes"));
-
-            try {
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                Inflater decompressor = new Inflater(true);
-                InflaterOutputStream inflaterOutputStream = new InflaterOutputStream(baos, decompressor);
-                inflaterOutputStream.write(compressedBytes);
-                inflaterOutputStream.close();
-
-                memory.setBytes(baos.toByteArray());
-
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        } else {
-            LogManager.LOGGER.severe("Memory was manually deleted");
-            memory = new Memory(GameServer.INSTANCE.getConfig().getInt("memory_size"));
-        }
-
-        return memory;
-    }
-
-    public static Memory deserialize(JSONObject json) {
-
-        Memory memory = new Memory(0);
-
-        String zipBytesStr = (String) json.get("zipBytes");
-
-        if (zipBytesStr != null) {
-            byte[] compressedBytes = Base64.getDecoder().decode((String) json.get("zipBytes"));
-
-            try {
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                Inflater decompressor = new Inflater(true);
-                InflaterOutputStream inflaterOutputStream = new InflaterOutputStream(baos, decompressor);
-                inflaterOutputStream.write(compressedBytes);
-                inflaterOutputStream.close();
-
-                memory.setBytes(baos.toByteArray());
-
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        } else {
-            LogManager.LOGGER.severe("Memory was manually deleted");
-            memory = new Memory(GameServer.INSTANCE.getConfig().getInt("memory_size"));
-        }
-
-
-        return memory;
     }
 
     public void setBytes(byte[] bytes) {

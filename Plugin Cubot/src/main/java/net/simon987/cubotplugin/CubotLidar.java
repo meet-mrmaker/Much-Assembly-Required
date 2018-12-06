@@ -1,21 +1,15 @@
 package net.simon987.cubotplugin;
 
-import com.mongodb.BasicDBObject;
-import com.mongodb.DBObject;
-import net.simon987.server.GameServer;
-import net.simon987.server.assembly.CpuHardware;
 import net.simon987.server.assembly.Memory;
 import net.simon987.server.assembly.Status;
-import net.simon987.server.game.World;
+import net.simon987.server.game.objects.ControllableUnit;
 import net.simon987.server.game.pathfinding.Node;
 import net.simon987.server.game.pathfinding.Pathfinder;
-import net.simon987.server.io.JSONSerialisable;
-import net.simon987.server.logging.LogManager;
-import org.json.simple.JSONObject;
+import org.bson.Document;
 
 import java.util.ArrayList;
 
-public class CubotLidar extends CpuHardware implements JSONSerialisable {
+public class CubotLidar extends CubotHardwareModule {
 
     /**
      * Hardware ID (Should be unique)
@@ -24,20 +18,19 @@ public class CubotLidar extends CpuHardware implements JSONSerialisable {
 
     public static final int DEFAULT_ADDRESS = 3;
 
-    private Cubot cubot;
-
     private static final int LIDAR_GET_POS = 1;
     private static final int LIDAR_GET_PATH = 2;
     private static final int LIDAR_GET_MAP = 3;
     private static final int LIDAR_GET_WORLD_POS = 4;
-
-    private static final int MEMORY_MAP_START = 0x0100;
-    private static final int MEMORY_PATH_START = 0x0000;
+    private static final int LIDAR_GET_WORLD_SIZE = 5;
 
     public CubotLidar(Cubot cubot) {
-        this.cubot = cubot;
+        super(cubot);
     }
 
+    public CubotLidar(Document document, ControllableUnit cubot) {
+        super(document, cubot);
+    }
 
     @Override
     public char getId() {
@@ -56,6 +49,7 @@ public class CubotLidar extends CpuHardware implements JSONSerialisable {
                 break;
             case LIDAR_GET_PATH:
                 if (cubot.spendEnergy(50)) {
+                    int c = getCpu().getRegisterSet().getRegister("C").getValue();
                     int b = getCpu().getRegisterSet().getRegister("B").getValue();
                     int destX = getCpu().getRegisterSet().getRegister("X").getValue();
                     int destY = getCpu().getRegisterSet().getRegister("Y").getValue();
@@ -67,7 +61,7 @@ public class CubotLidar extends CpuHardware implements JSONSerialisable {
                     //Write to memory
                     Memory mem = getCpu().getMemory();
 
-                    int counter = MEMORY_PATH_START;
+                    int counter = c;
 
                     if (nodes != null) {
 
@@ -75,7 +69,6 @@ public class CubotLidar extends CpuHardware implements JSONSerialisable {
 
                         for (Node n : nodes) {
                             //Store the path as a sequence of directions
-
                             if (lastNode == null) {
                                 lastNode = n;
                                 continue;
@@ -104,8 +97,6 @@ public class CubotLidar extends CpuHardware implements JSONSerialisable {
                         //Indicate invalid path 0xFFFF
                         mem.set(counter, 0xFFFF);
                     }
-
-                    LogManager.LOGGER.fine("DEBUG: path to" + destX + "," + destY);
                 }
 
                 break;
@@ -114,47 +105,26 @@ public class CubotLidar extends CpuHardware implements JSONSerialisable {
                 if (cubot.spendEnergy(10)) {
                     char[][] mapInfo = cubot.getWorld().getMapInfo();
 
-                    int i = MEMORY_MAP_START;
-                    for (int y = 0; y < World.WORLD_SIZE; y++) {
-                        for (int x = 0; x < World.WORLD_SIZE; x++) {
+                    //Write map data to the location specified by register X
+                    int i = getCpu().getRegisterSet().getRegister("X").getValue();
+                    for (int x = 0; x < cubot.getWorld().getWorldSize(); x++) {
+                        for (int y = 0; y < cubot.getWorld().getWorldSize(); y++) {
                             getCpu().getMemory().set(i++, mapInfo[x][y]);
                         }
                     }
                 }
-
                 break;
+
+            case LIDAR_GET_WORLD_SIZE:
+                getCpu().getRegisterSet().getRegister("X").setValue(cubot.getWorld().getWorldSize());
+                getCpu().getRegisterSet().getRegister("Y").setValue(cubot.getWorld().getWorldSize());
+                break;
+
             case LIDAR_GET_WORLD_POS:
                 getCpu().getRegisterSet().getRegister("X").setValue(cubot.getWorld().getX());
                 getCpu().getRegisterSet().getRegister("Y").setValue(cubot.getWorld().getY());
                 break;
 
         }
-
-
-    }
-
-    @Override
-    public JSONObject serialise() {
-
-        JSONObject json = new JSONObject();
-        json.put("hwid", (int) HWID);
-        json.put("cubot", cubot.getObjectId());
-
-        return json;
-    }
-
-    @Override
-    public BasicDBObject mongoSerialise() {
-
-        BasicDBObject dbObject = new BasicDBObject();
-
-        dbObject.put("hwid", (int) HWID);
-        dbObject.put("cubot", cubot.getObjectId());
-
-        return dbObject;
-    }
-
-    public static CubotLidar deserialize(DBObject obj) {
-        return new CubotLidar((Cubot) GameServer.INSTANCE.getGameUniverse().getObject((long) obj.get("cubot")));
     }
 }
